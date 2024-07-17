@@ -29,17 +29,15 @@ def make_splits(_data, _data_intlabel, data_targets, seed, val_set=True, stratif
             'val'  : (val_data, val_y),
             'test' : (test_data, test_y)}
 
-def make_plot_distribution(self, y_train,y_test,y_val=None):
+def make_plot_distribution(dataset_info, len_datasets):
         
-    x = np.arange(3 if y_val else 2) # the label locations
+    x = np.arange(len_datasets) # the label locations
     width = 0.1
     multiplier = 0
     fig, ax = plt.subplots(layout='constrained')
 
     new_dict = dict()
-    
-    train_val_test_len, dataset_info = self._get_dataset_info(y_train,y_test,y_val)
-    
+
     for value in dataset_info.keys():
         for att in dataset_info[value]:
             if att not in new_dict:
@@ -63,19 +61,29 @@ def make_plot_distribution(self, y_train,y_test,y_val=None):
     plt.show()
     plt.clf()
 
-def compute_dataset_info(self, y_train, y_test, y_val):
+def compute_dataset_info(labels, **datasets): #y_train, y_test, y_val):
     """
     Count number of class elements for each dataset
     """
-    train_val_test_len = {}
+    def _get_split_count(splitlabel, labels):
+        """
+        Count elements for each dataset
+        """
+        split_info = {}
+
+        foundlabels, countlabels = np.unique(splitlabel, axis=0, return_counts=True)
+
+        for i,label in enumerate(foundlabels):
+            split_info[labels[label]] = countlabels[i]
+
+        return split_info
     
-    train_val_test_len = {  'train': len(y_train),
-                            'val': len(y_val),
-                            'test': len(y_test)}
+    train_val_test_len = {}
+    dataset_info = {}
 
+    for key in datasets.keys():
 
-    dataset_info = { 'train': self._get_split_count(y_train),
-                        'val'  : self._get_split_count(y_val),
-                        'test' : self._get_split_count(y_test)}
+        train_val_test_len[key] = len(datasets[key])
+        dataset_info[key] =_get_split_count(datasets[key])
 
     return train_val_test_len, dataset_info

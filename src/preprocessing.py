@@ -18,8 +18,6 @@ class PreprocessData:
         self._max_len = max_len
 
         self._prepare_data()
-
-
         
     def _prepare_data(self) -> None:
 
@@ -95,6 +93,8 @@ class MyDataset:
 
         if val_set:
             self._val_data, self._val_y = splits['val']
+        else:
+            self._val_y = None
 
         self._is_splitted = True
 
@@ -111,7 +111,7 @@ class MyDataset:
             test_loader = DataLoader(test_ds, sampler=BatchSampler(SequentialSampler(test_ds), batch_size=batch_size, drop_last=False), batch_size=None, pin_memory=True)
             
 
-            if self._val_set:
+            if self._val_y:
                 val_ds = _MyDataset(self._val_data, self._val_y,tokenizer)
                 val_loader = DataLoader(val_ds, sampler=BatchSampler(SequentialSampler(val_ds), batch_size=batch_size, drop_last=False), batch_size=None, pin_memory=True)
 
@@ -128,26 +128,20 @@ class MyDataset:
 
             return loader
         
-    def _get_split_count(self, splitlabel):
-        """
-        Count elements for each dataset
-        """
-        split_info = {}
-
-        foundlabels, countlabels = np.unique(splitlabel,axis=0,return_counts=True)
-
-        for i,label in enumerate(foundlabels):
-            split_info[self._labels[label]] = countlabels[i]
-
-        return split_info
-
     def plot_distribution(self):
 
-        if not self._is_splitted:
-            self.split_data(self.seed, self._val_set, self._stratify)
+        if self._is_splitted:
+            
+            datasets = { 'train':self._train_y, 'test':self._test_y}
+            if self._val_y:
+                datasets['val'] = self._val_y
+        else:
+            datasets = {'dataset':self.targets}
 
-        train_val_test_len, dataset_info = compute_dataset_info(self._train_y, self._test_y, self._val_y)
-        make_plot_distribution(dataset_info, self._train_y,self._test_y,self._val_y)
+        datasets_len, dataset_info = compute_dataset_info(self._labels, datasets)
+
+        print(datasets_len, dataset_info)
+        make_plot_distribution(dataset_info, len(datasets))
 
 class _MyDataset(Dataset):
 
