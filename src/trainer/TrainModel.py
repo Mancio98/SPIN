@@ -1,0 +1,158 @@
+import os
+import torch
+import numpy as np
+from typing import DefaultDict
+from torch.utils.tensorboard import SummaryWriter
+
+from timeit import default_timer as timer
+
+class TrainModel:
+
+    def __init__(self, nametrain, device, path_dir=".", ckpt_dir='checkpoints'):
+
+        self.device = device
+        self.name_train = nametrain
+        self.ckpt_dir = ckpt_dir
+        self._prepare_training_dirs(path_dir)
+        self._configure_logging(path_dir)
+
+    def _configure_logging(self, path_dir):
+
+        self.log_interval = 50
+
+        log_dir = os.path.join(path_dir,"runs", self.name_train)
+
+        self.writer = SummaryWriter(log_dir)
+
+    def _prepare_training_dirs(self, path_dir):
+
+        self.ckpt_dir = os.path.join(path_dir,"checkpoints",self.name_train)
+        os.makedirs(self.ckpt_dir, exist_ok=True)
+    
+    def _save_weights(self, model_name):
+        
+        path = os.path.join(self.ckpt_dir, model_name)
+        #print(f"check_point path: {path}")
+        torch.save(self.model.state_dict(), path)
+
+    def _train(self, train_loader, criterion, epoch):
+        pass
+    
+    def _validation(self, val_loader, criterion, epoch):
+        pass
+
+    def fit(self, model, train_loader, val_loader, criterion, num_epochs, optimizer, early_stopping=None, lr_scheduler=None, verbose=True) -> DefaultDict:
+
+        self.model = model
+
+        self.lr = optimizer.param_groups[0]['lr']
+        self.optimizer = optimizer
+        
+        self.lr_scheduler = lr_scheduler
+        #collect loss and metrics
+        train_loss_list = []
+        train_acc_list = []
+
+        val_loss_list = []
+        val_acc_list = []
+
+        #check time for training NN
+        loop_start = timer()
+
+        if next(self.model.parameters()).device != self.device:
+            self.model.to(self.device)
+
+        best_acc = 0.
+        best_model_name = ""
+        
+        early_counter = 0
+        interrupt_loop = False
+
+        epoch = 1
+        while not interrupt_loop and epoch < (num_epochs + 1): 
+
+            time_start = timer()
+
+            loss_train, acc_train = self._train(train_loader, criterion, epoch)
+            train_loss_list.append(loss_train)
+            train_acc_list.append(acc_train)
+
+            if val_loader:
+
+                loss_val, acc_val = self._validation(val_loader, criterion, epoch)
+                val_loss_list.append(loss_val)
+                val_acc_list.append(acc_val)
+
+            time_end = timer()
+           
+            if acc_val > best_acc:
+                best_acc = acc_val if val_loader else acc_train
+                
+                best_model_name =  f"{self.name_train}-LR_{self.lr}-Epoch_{epoch}"\
+                                   f"-Val_{best_acc:.2f}.pth" if val_loader else f"-Train_{best_acc:.2f}.pth"
+                self._save_weights(best_model_name)
+
+                early_counter = 0
+            elif early_stopping is not None:
+
+                if early_counter >= early_stopping:
+                    interrupt_loop = True
+                else:
+                    early_counter +=1
+
+            if lr_scheduler is not None:
+                self.lr = self.optimizer.param_groups[0]['lr']
+                lr_scheduler.step(loss_val if val_loader else loss_train)
+
+            self._log_printing(epoch, (loss_train, loss_val), (acc_train, acc_val),(time_start, time_end), verbose)
+
+            self._writer_update(epoch, loss_train, loss_val)
+
+            epoch += 1
+
+        loop_end = timer()
+        time_loop = loop_end - loop_start
+
+        if verbose:
+            print(f'Time for {num_epochs} epochs (s): {(time_loop):.3f}')
+
+        self.writer.close()
+
+        best_epoch = np.argmax(val_acc_list if val_loader else train_acc_list).astype(int) + 1  #choose best epochs
+        best_acc = val_acc_list[best_epoch - 1] if val_loader else train_acc_list[best_epoch - 1]  #choose best loss
+
+        print(f'Best acc: {best_acc:.2f} epoch: {best_epoch}.'+'\n')
+
+        # return {'best_model': best_model_name,
+        #         'best_epoch':best_epoch,
+        #          'best_acc': best_acc }
+        return {'train_loss': train_loss_list,
+                'val_loss': val_loss_list,
+                'train_acc_values': train_acc_list,
+                'val_acc_values': val_acc_list,
+                'time': time_loop,
+                'best_model': best_model_name}
+
+    def _log_printing(self, epoch, losses, accurs, times, verbose):
+
+        if verbose:
+            loss_train, loss_val = losses
+            time_start, time_end = times
+            acc_train, acc_val = accurs
+
+            print(  f' Epoch: {epoch} '
+                    f' Lr: {self.lr:.7f} '
+                    f' Loss: Train = [{loss_train:.4f}]'
+                    f' - Val = [{loss_val:.4f}] ' if loss_val else ''
+                    f' Accuracy: Train = [{acc_train:.2f}%]'
+                    f' - Val = [{acc_val:.2f}%] ' if acc_val else ''
+                    f' Time one epoch (s): {(time_end - time_start):.4f} ')
+
+    def _writer_update(self, epoch, loss_train, loss_val):
+
+        # Plot to tensorboard
+
+        self.writer.add_scalar('Hyperparameters/Learning Rate', self.lr, epoch) #scheduling of learning rate useful if change
+        self.writer.add_scalars('Metrics/Losses', {"Train": loss_train, "Val": loss_val}, epoch)
+
+        self.writer.flush()  #write logs on log folder/file
