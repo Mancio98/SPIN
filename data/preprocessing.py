@@ -94,9 +94,9 @@ class MyDataset:
         splits = make_splits(self.targets, seed, val_set, stratify=stratify)
 
         self._train_idx = self.data_ids[splits['train']]
-        self._test_idx = self.data_ids[splits['test']]
-
         self._train_y = self.targets[splits['train']]
+
+        self._test_idx = self.data_ids[splits['test']]
         self._test_y = self.targets[splits['test']]
 
         self._val_y = None
@@ -130,7 +130,7 @@ class MyDataset:
             test_ds = _MyDataset(self._test_idx, self._test_y, tokenizer, fpath)
 
             train_loader = DataLoader(
-                train_ds, batch_sampler=BatchSampler(RandomSampler(train_ds),batch_size=batch_size,drop_last=False),pin_memory=True, num_workers=4
+                train_ds, batch_sampler=BatchSampler(RandomSampler(train_ds),batch_size=batch_size,drop_last=False), pin_memory=True, num_workers=4
                 )
             test_loader = DataLoader(
                 test_ds, batch_sampler=BatchSampler(SequentialSampler(test_ds), batch_size=batch_size, drop_last=False), pin_memory=True, num_workers=4
@@ -145,9 +145,9 @@ class MyDataset:
             
 
             if self._val_y is not None:
-                val_ds = _MyDataset(self._val_idx, self._val_y,tokenizer,fpath)
+                val_ds = _MyDataset(self._val_idx, self._val_y, tokenizer, fpath)
                 val_loader = DataLoader(
-                    val_ds, sampler=BatchSampler(SequentialSampler(val_ds), batch_size=batch_size, drop_last=False), batch_size=None, pin_memory=True, num_workers=4
+                    val_ds, sampler=BatchSampler(SequentialSampler(val_ds), batch_size=batch_size, drop_last=False), pin_memory=True, num_workers=4
                     )
 
                 return {    'train_loader': train_loader,
@@ -160,7 +160,7 @@ class MyDataset:
 
             ds = _MyDataset(self.data_ids, self.targets, tokenizer, fpath)
             loader = DataLoader(
-                ds, sampler=BatchSampler(SequentialSampler(ds), batch_size=batch_size, drop_last=False), batch_size=None, pin_memory=True, num_workers=4
+                ds, sampler=BatchSampler(SequentialSampler(ds), batch_size=batch_size, drop_last=False), pin_memory=True, num_workers=4
                 )
 
             return loader
