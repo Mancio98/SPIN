@@ -25,7 +25,7 @@ def make_splits(targets, seed, val_set=True, stratify=True):
             'val'  : val_idx,
             'test' : test_idx}
 
-def make_plot_distribution(dataset_info, len_datasets):
+def make_plot_distribution(dataset_info, len_datasets, class2colors):
         
     x = np.arange(len_datasets) # the label locations
     width = 0.1
@@ -39,16 +39,19 @@ def make_plot_distribution(dataset_info, len_datasets):
            
             new_dict[att][value] = dataset_info[value][att]
 
-    print(new_dict)
     for attribute in new_dict.keys():
         offset = width * multiplier
-        rects = ax.bar(x + offset , list(new_dict[attribute].values()), width, label=attribute)
+
+        color = class2colors[attribute] if class2colors is not None else None
+        rects = ax.bar(
+            x + offset , list(new_dict[attribute].values()), width, label=attribute, color=color
+            )
         ax.bar_label(rects, padding=3)
         multiplier += 1
 
     ax.set_ylabel('# Samples')
     ax.set_title('Classes distribution')
-    ax.set_xticks(x + width*2, ["Train","Val","Test"])
+    ax.set_xticks(x + width*2, ["Train","Test","Val"])
     ax.legend(loc='upper left', ncols=2)
     ax.set_ylim(0, 10000)
 
@@ -71,7 +74,7 @@ def compute_dataset_info(labels, **datasets): #y_train, y_test, y_val):
         for i,label in enumerate(foundlabels):
             split_info[labels[label]] = countlabels[i]
 
-        print(split_info)
+
         return split_info
     
     train_val_test_len = {}

@@ -8,6 +8,7 @@ from torch.utils.data import Dataset, DataLoader
 from torch.utils.data.sampler import BatchSampler, RandomSampler, SequentialSampler
 from typing import Dict
 
+from sklearn.utils.class_weight import compute_class_weight
 from settings import BASE_PATH, MAX_LENGTH
 
 class PreprocessData:
@@ -40,6 +41,8 @@ class PreprocessData:
         
         data_df = pd.read_csv(self._base_dir / self._data_input, sep=',')
 
+        data_df.drop_duplicates(subset=['id_seq'], inplace=True)
+
         # data_id = data_df['id_seq'].values
         data_seq = data_df['sequence'].values
 
@@ -48,9 +51,9 @@ class PreprocessData:
         # data_end = data_df['end'].values
         data_label = data_df['group'].values
 
-        #self._data_ids = self._filter_idx_by_length(data_seq)
+        self._data_ids = self._filter_idx_by_length(data_seq)
+        #self._data_ids = np.arange(len(data_seq), dtype=int)
 
-        self._data_ids = np.arange(len(data_seq), dtype=int)
         self._targets = data_label[self._data_ids]
 
         assert len(self._data_ids) == len(self._targets)
@@ -73,18 +76,19 @@ class MyDataset:
         
         self.data_ids = data_ids
 
-        if targets is not None:
-            self.labels = np.unique(targets)
+        self.targets = targets
 
-            self.targets = np.zeros(targets.shape, dtype=int)
+        self.labels = np.unique(targets)
 
-            for i,label in enumerate(targets):
+        self.targets = np.zeros(targets.shape, dtype=int)
 
-                self.targets[i] = np.where(self.labels == label)[0][0]
+        for i,label in enumerate(targets):
+
+            self.targets[i] = np.where(self.labels == label)[0][0]
         
         self._is_splitted = False
         
-    def split_data(self, seed, val_set=True, stratify=True) -> None:
+    def split_data(self, seed, val_set=True, stratify=True, undersampling=False) -> None:
 
         if self.targets is None:
 
@@ -100,10 +104,35 @@ class MyDataset:
         self._test_y = self.targets[splits['test']]
 
         self._val_y = None
+
         if val_set:
             self._val_idx = self.data_ids[splits['val']]
             self._val_y = self.targets[splits['val']]
-           
+
+        if undersampling:
+
+            _, counts = np.unique(self._train_y, return_counts=True)
+
+            sort_counts = np.argsort(counts)[::-1]
+
+            first_class = sort_counts[0]
+            second_class = sort_counts[1]
+
+            first_idx = np.array(self._train_y == first_class).nonzero()[0]
+            
+            remove_part = first_idx[counts[second_class]:]
+
+            print(remove_part)
+
+            removing_y = self._train_y[remove_part]
+            removing_idx = self._train_idx[remove_part]
+
+            self._train_y = np.delete(self._train_y, remove_part)
+            self._train_idx = np.delete(self._train_idx, remove_part)
+
+            self._test_y = np.concatenate([self._test_y,  removing_y])
+            self._test_idx = np.concatenate([self._test_idx, removing_idx])
+
         self._is_splitted = True
 
     def compute_class_weights(self):
@@ -115,13 +144,19 @@ class MyDataset:
 
         class_array, class_sampls = np.unique(self._train_y, return_counts=True)
 
-        tot_sampls = class_sampls.sum()
-        class_weights = torch.FloatTensor([1. - (sample/ tot_sampls) for sample in class_sampls])
-        print(f"Weights per class: {class_weights}")
-        
-        return class_weights
+        tot_samples = class_sampls.sum()
+        # class_weights = torch.FloatTensor([1. - (sample / tot_samples) for sample in class_sampls])
 
-    def get_data_loaders(self, model_name, fpath=None, batch_size=8) ->  Dict|DataLoader:
+
+        class_weights = compute_class_weight(class_weight="balanced", classes=class_array, y=self._train_y)
+        class2weight = {i:class_weights[i] for i in range(len(class_weights))}
+
+        print(f"Weights per class: {class2weight}")
+        
+        return class2weight
+
+    def get_data_loaders(self, model_name, fpath=None, batch_size=8) ->  Dict[str,DataLoader]|DataLoader:
+
         tokenizer = AutoTokenizer.from_pretrained(model_name)
 
         if self._is_splitted:
@@ -145,9 +180,10 @@ class MyDataset:
             
 
             if self._val_y is not None:
+
                 val_ds = _MyDataset(self._val_idx, self._val_y, tokenizer, fpath)
                 val_loader = DataLoader(
-                    val_ds, sampler=BatchSampler(SequentialSampler(val_ds), batch_size=batch_size, drop_last=False), pin_memory=True, num_workers=4
+                    val_ds, batch_sampler=BatchSampler(SequentialSampler(val_ds), batch_size=batch_size, drop_last=False), pin_memory=True, num_workers=4
                     )
 
                 return {    'train_loader': train_loader,
@@ -160,12 +196,12 @@ class MyDataset:
 
             ds = _MyDataset(self.data_ids, self.targets, tokenizer, fpath)
             loader = DataLoader(
-                ds, sampler=BatchSampler(SequentialSampler(ds), batch_size=batch_size, drop_last=False), pin_memory=True, num_workers=4
+                ds, batch_sampler=BatchSampler(SequentialSampler(ds), batch_size=batch_size, drop_last=False), pin_memory=True, num_workers=4
                 )
 
             return loader
         
-    def plot_distribution(self):
+    def plot_distribution(self, class2colors=None):
 
         if self._is_splitted:
             
@@ -177,8 +213,7 @@ class MyDataset:
 
         datasets_len, dataset_info = compute_dataset_info(self.labels, **datasets)
 
-        print(datasets_len, dataset_info)
-        make_plot_distribution(dataset_info, len(datasets))
+        make_plot_distribution(dataset_info, len(datasets), class2colors)
 
 class _MyDataset(Dataset):
 
@@ -186,7 +221,8 @@ class _MyDataset(Dataset):
 
         self.X = data
         self.y = torch.LongTensor(label)
-        
+
+        self.data_df = None
         if fpath:
             self.data_df = pd.read_csv(BASE_PATH / fpath, sep=',')
 
@@ -194,7 +230,7 @@ class _MyDataset(Dataset):
         self.num_class = np.unique(label)[0]
 
     def __len__(self):
-        return len(self.y)
+        return len(self.y) 
 
     def __getitem__(self, batch_idx):
 
@@ -208,5 +244,7 @@ class _MyDataset(Dataset):
             )
         
         batch_x = {key: val.squeeze(0) for key, val in batch_x.items()}  # Remove batch dimension
+
         batch_y = self.y[batch_idx]
+            
         return batch_x, batch_y
