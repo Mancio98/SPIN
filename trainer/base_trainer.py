@@ -172,16 +172,16 @@ class TrainModel:
     def _log_printing(self, epoch, loss_train, acc_train, time, loss_val=None, acc_val=None):
 
             log =   f' Epoch: {epoch} '\
-                    f' Lr: {self.lr:.7f} '\
+                    f' Lr: {self.lr} '\
                     f' Loss: Train = [{loss_train:.4f}]'
 
             if loss_val:
                     log += f' - Val = [{loss_val:.4f}] '
             
-            log += f' Accuracy: Train = [{acc_train:.2f}%]'
+            log += f' Accuracy: Train = [{acc_train:.4f}%]'
 
             if acc_val:
-                    log += f' - Val = [{acc_val:.2f}%] '
+                    log += f' - Val = [{acc_val:.4f}%] '
             
             log += f' Time one epoch (s): {(time):.4f} '
 

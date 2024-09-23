@@ -1,9 +1,8 @@
 import argparse
+import numpy as np
+import torch 
 
-import torch
-import torch.nn as nn
 from typing import Dict
-
 from model import get_model
 from data.preprocessing import MyDataset, PreprocessData
 from trainer.trainer_profilesm import TrainProfileESM
@@ -56,9 +55,9 @@ class TrainingPipeline:
         if not (self.base_dir/ fpath).exists() or not fpath.endswith(".csv"):
             raise Exception("file type incorrect or path doesn't exist")
         
-        data, targets = PreprocessData(fpath).get_data()
+        dataframe = PreprocessData(fpath).get_data()
 
-        dataset = MyDataset(data, targets)
+        dataset = MyDataset(dataframe)
         dataset.split_data(self.seed,val_set=validate)
         dataset.plot_distribution()
 

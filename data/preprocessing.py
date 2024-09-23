@@ -1,6 +1,8 @@
+from collections import defaultdict
 import numpy as np
 import pandas as pd
 import torch
+from traitlets import default
 
 from utils.data_utils import compute_dataset_info, make_plot_distribution, make_splits
 from transformers import AutoTokenizer
@@ -38,25 +40,27 @@ class PreprocessData:
 
     def _process_csv(self):
         
-        
         data_df = pd.read_csv(self._base_dir / self._data_input, sep=',')
 
+        print(f"Dataset shape: {data_df.shape}")
+        print(data_df.head(10))
+
+        #drop possible duplicates
+        print("Drop duplicates...")
         data_df.drop_duplicates(subset=['id_seq'], inplace=True)
+        print(f"New shape: {data_df.shape}")
 
-        # data_id = data_df['id_seq'].values
-        data_seq = data_df['sequence'].values
+        # remove possible gaps
+        data_df['sequence'] = data_df['sequence'].apply(lambda s: s.replace('-','').upper())
 
-        data_seq = np.array([seq.replace('-','').upper() for seq in data_seq])
-        # data_start = data_df['start'].values
-        # data_end = data_df['end'].values
-        data_label = data_df['group'].values
+        # remove sequence longer than the maximum length handled by the model
+        print(f"Drop sequence with length > {self._max_len}...")
+        filter_indices = self._filter_idx_by_length(data_df['sequence'])
+        data_df = data_df.iloc[filter_indices].reset_index(drop=True)
 
-        self._data_ids = self._filter_idx_by_length(data_seq)
-        #self._data_ids = np.arange(len(data_seq), dtype=int)
+        print(f"New shape: {data_df.shape}")
 
-        self._targets = data_label[self._data_ids]
-
-        assert len(self._data_ids) == len(self._targets)
+        self.data_df = data_df
 
     def _filter_idx_by_length(self, seqs):
 
@@ -68,70 +72,63 @@ class PreprocessData:
     
     def get_data(self):
 
-        return self._data_ids, self._targets
+        return self.data_df
 
 class MyDataset:
 
-    def __init__(self, data_ids, targets=None) -> None:
+    def __init__(self, dataframe: pd.DataFrame) -> None:
         
-        self.data_ids = data_ids
+        self.dataframe = dataframe
 
-        self.targets = targets
+        if 'group' in self.dataframe.columns:
+            
+            pd_cat = pd.Categorical(self.dataframe['group'])
 
-        self.labels = np.unique(targets)
-
-        self.targets = np.zeros(targets.shape, dtype=int)
-
-        for i,label in enumerate(targets):
-
-            self.targets[i] = np.where(self.labels == label)[0][0]
+            self.labels = pd_cat.categories
+            self.dataframe['label'] = pd_cat.codes
         
         self._is_splitted = False
         
     def split_data(self, seed, val_set=True, stratify=True, undersampling=False) -> None:
 
-        if self.targets is None:
+        if 'label' in self.dataframe.columns:
 
             print("No meaning in splitting without targets")
             return
         
-        splits = make_splits(self.targets, seed, val_set, stratify=stratify)
+        splits = make_splits(self.dataframe['labels'], seed, val_set, stratify=stratify)
 
-        self._train_idx = self.data_ids[splits['train']]
-        self._train_y = self.targets[splits['train']]
-
-        self._test_idx = self.data_ids[splits['test']]
-        self._test_y = self.targets[splits['test']]
-
-        self._val_y = None
+        self.train_df = self.dataframe.iloc[splits['train']].reset_index(names=['old_index'])
+        self.test_df = self.dataframe.iloc[splits['test']].reset_index(names=['old_index'])
+        self.val_df = None
 
         if val_set:
-            self._val_idx = self.data_ids[splits['val']]
-            self._val_y = self.targets[splits['val']]
+            self.val_df = self.dataframe.iloc[splits['val']].reset_index(names=['old_index'])
 
         if undersampling:
-
-            _, counts = np.unique(self._train_y, return_counts=True)
+            
+            _, counts = np.unique(self.train_df['labels'], return_counts=True)
 
             sort_counts = np.argsort(counts)[::-1]
 
             first_class = sort_counts[0]
             second_class = sort_counts[1]
 
-            first_idx = np.array(self._train_y == first_class).nonzero()[0]
-            
+            first_idx = np.nonzero(self.train_df['labels'] == first_class)[0]
+
             remove_part = first_idx[counts[second_class]:]
 
             print(remove_part)
 
-            removing_y = self._train_y[remove_part]
-            removing_idx = self._train_idx[remove_part]
+            train_idx = self.train_df.index.values
+            test_idx = self.test_df.index.values
 
-            self._train_y = np.delete(self._train_y, remove_part)
-            self._train_idx = np.delete(self._train_idx, remove_part)
+            removing_idx = train_idx[remove_part]
+            train_idx = np.delete(train_idx, remove_part)
+            test_idx = np.concatenate([test_idx, removing_idx])
 
-            self._test_y = np.concatenate([self._test_y,  removing_y])
-            self._test_idx = np.concatenate([self._test_idx, removing_idx])
+            self.train_df.iloc[train_idx].reset_index(drop=True)
+            self.test_df.iloc[test_idx].reset_index(drop=True)
 
         self._is_splitted = True
 
@@ -142,59 +139,44 @@ class MyDataset:
             print("Data not splitted")
             return
 
-        class_array, class_sampls = np.unique(self._train_y, return_counts=True)
+        class_array, _ = np.unique(self._train_y, return_counts=True)
 
-        tot_samples = class_sampls.sum()
-        # class_weights = torch.FloatTensor([1. - (sample / tot_samples) for sample in class_sampls])
-
-
-        class_weights = compute_class_weight(class_weight="balanced", classes=class_array, y=self._train_y)
+        class_weights = compute_class_weight(class_weight="balanced", classes=class_array, y=self.train_df['labels'])
         class2weight = {i:class_weights[i] for i in range(len(class_weights))}
 
         print(f"Weights per class: {class2weight}")
         
         return class2weight
 
-    def get_data_loaders(self, model_name, fpath=None, batch_size=8) ->  Dict[str,DataLoader]|DataLoader:
+    def get_data_loaders(self, model_name, batch_size=8) ->  Dict[str,DataLoader]|DataLoader:
 
         tokenizer = AutoTokenizer.from_pretrained(model_name)
 
         if self._is_splitted:
 
-            train_ds = _MyDataset(self._train_idx, self._train_y, tokenizer, fpath)
-            test_ds = _MyDataset(self._test_idx, self._test_y, tokenizer, fpath)
+            train_ds = _MyDataset(self.train_df, tokenizer)
+            test_ds = _MyDataset(self.test_df, tokenizer)
 
-            train_loader = DataLoader(
+            loader_dict = defaultdict(DataLoader)
+            loader_dict['train_loader'] = DataLoader(
                 train_ds, batch_sampler=BatchSampler(RandomSampler(train_ds),batch_size=batch_size,drop_last=False), pin_memory=True, num_workers=4
                 )
-            test_loader = DataLoader(
+            loader_dict['test_loader'] = DataLoader(
                 test_ds, batch_sampler=BatchSampler(SequentialSampler(test_ds), batch_size=batch_size, drop_last=False), pin_memory=True, num_workers=4
                 )
-
-            # train_loader = DataLoader(
-            #     train_ds, batch_size=batch_size, drop_last=False,pin_memory=True, num_workers=4
-            #     )
-            # test_loader = DataLoader(
-            #     train_ds, batch_size=batch_size, drop_last=False,pin_memory=True, num_workers=4
-            #     )
             
+            if self.val_df is not None:
 
-            if self._val_y is not None:
-
-                val_ds = _MyDataset(self._val_idx, self._val_y, tokenizer, fpath)
-                val_loader = DataLoader(
+                val_ds = _MyDataset(self.val_df, tokenizer)
+                loader_dict['val_loader'] = DataLoader(
                     val_ds, batch_sampler=BatchSampler(SequentialSampler(val_ds), batch_size=batch_size, drop_last=False), pin_memory=True, num_workers=4
                     )
-
-                return {    'train_loader': train_loader,
-                            'val_loader'  : val_loader,
-                            'test_loader' : test_loader}
             
-            return {    'train_loader': train_loader,
-                        'test_loader' : test_loader}
+            return loader_dict
+        
         else:
 
-            ds = _MyDataset(self.data_ids, self.targets, tokenizer, fpath)
+            ds = _MyDataset(self.dataframe, tokenizer)
             loader = DataLoader(
                 ds, batch_sampler=BatchSampler(SequentialSampler(ds), batch_size=batch_size, drop_last=False), pin_memory=True, num_workers=4
                 )
@@ -205,11 +187,13 @@ class MyDataset:
 
         if self._is_splitted:
             
-            datasets = { 'train': self._train_y, 'test': self._test_y}
+            datasets = {}
+            datasets['train'] = self.train_df['label']
+            datasets['test'] = self.test_df['label']
             if self._val_y is not None:
-                datasets['val'] = self._val_y
+                datasets['val'] = self.val_df['label']
         else:
-            datasets = {'dataset':self.targets}
+            datasets = {'dataset':self.dataframe['label']}
 
         datasets_len, dataset_info = compute_dataset_info(self.labels, **datasets)
 
@@ -217,34 +201,27 @@ class MyDataset:
 
 class _MyDataset(Dataset):
 
-    def __init__(self, data, label, tokenizer, fpath):
-
-        self.X = data
-        self.y = torch.LongTensor(label)
+    def __init__(self, dataframe: pd.DataFrame, tokenizer):
+        
+        self.X = dataframe['sequence']
+        
+        if 'label' in dataframe.columns:
+            self.y = torch.LongTensor(dataframe['label'])
 
         self.data_df = None
-        if fpath:
-            self.data_df = pd.read_csv(BASE_PATH / fpath, sep=',')
-
         self.tokenizer = tokenizer
-        self.num_class = np.unique(label)[0]
 
     def __len__(self):
-        return len(self.y) 
+        return len(self.X) 
 
-    def __getitem__(self, batch_idx):
-
-        if self.data_df is not None:
-            batch_seqs = self.data_df.loc[self.X[batch_idx],['sequence']].values.tolist()
-        else:
-            batch_seqs = self.X[batch_idx]
+    def __getitem__(self, idx):
 
         batch_x = self.tokenizer(
-            batch_seqs, max_length=MAX_LENGTH, padding='max_length', truncation=True, return_tensors='pt'
+            self.X[idx], max_length=MAX_LENGTH, padding='max_length', truncation=True, return_tensors='pt'
             )
         
         batch_x = {key: val.squeeze(0) for key, val in batch_x.items()}  # Remove batch dimension
 
-        batch_y = self.y[batch_idx]
+        batch_y = self.y[idx]
             
         return batch_x, batch_y

@@ -1,29 +1,32 @@
-from collections import defaultdict
+import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 
 from sklearn.model_selection import train_test_split
-
+from collections import defaultdict
 
 def make_splits(targets, seed, val_set=True, stratify=True):
 
-    data_idx = np.arange(len(targets), dtype=int)
+    data_idx = np.arange(len(targets))
+
     train_idx, test_idx = train_test_split(
         data_idx, test_size=0.2, random_state=seed, stratify=targets if stratify else None
         )
     
-    if not val_set:
+    split_dict = defaultdict(pd.DataFrame)
 
-        return {'train': train_idx,
-                'test' : test_idx}
+    split_dict['train'] = train_idx
+    split_dict['test'] = test_idx
     
-    train_idx, val_idx = train_test_split(
-        train_idx, test_size=0.2, random_state=seed, stratify=targets[train_idx] if stratify else None
-        )
+    if val_set:
+        train_idx, val_idx = train_test_split(
+            train_idx, test_size=0.2, random_state=seed, stratify=targets[train_idx] if stratify else None
+            )
+            
+        split_dict['train'] = train_idx
+        split_dict['val'] = val_idx
 
-    return {'train': train_idx,
-            'val'  : val_idx,
-            'test' : test_idx}
+    return split_dict
 
 def make_plot_distribution(dataset_info, len_datasets, class2colors):
         
