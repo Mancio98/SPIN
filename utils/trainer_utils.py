@@ -1,47 +1,41 @@
 import torch
-import math
-from torch.optim.lr_scheduler import LRScheduler
+from transformers import get_cosine_schedule_with_warmup, get_linear_schedule_with_warmup
 
-class WarmupCosineLR(LRScheduler):
-    def __init__(self, optimizer, warmup_epochs, max_epochs, min_lr=0, last_epoch=-1):
-        self.warmup_epochs = warmup_epochs
-        self.max_epochs = max_epochs
-        self.min_lr = min_lr
-        super(WarmupCosineLR, self).__init__(optimizer, last_epoch)
 
-    def get_lr(self):
-        if self.last_epoch < self.warmup_epochs:
-            # Warmup phase
-            return [
-                base_lr * (self.last_epoch + 1) / self.warmup_epochs
-                for base_lr in self.base_lrs
-            ]
+
+def get_optimizer(optimizer, model_params, **options):
+
+    if optimizer == 'adam':
+
+        return torch.optim.Adam(model_params, **options)
+    
+    elif optimizer == 'adamw':
+
+        return torch.optim.Adam(model_params, **options)
+    
+def get_scheduler(optimizer, lr_scheduler, train_steps, factor: float = None):
+
+    if lr_scheduler == 'warmuplinear':
+
+        return get_linear_schedule_with_warmup(optimizer, num_warmup_steps=int(train_steps * 0.1), num_training_steps=train_steps)
+    
+    elif lr_scheduler == 'warmupcos':
+
+        return get_cosine_schedule_with_warmup(optimizer, num_warmup_steps=int(train_steps * 0.1), num_training_steps=train_steps)
+    
+    elif lr_scheduler == 'onplateau':
+
+        if factor is not None:
+            return torch.optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer, mode='min', patience=1, threshold=0.001, threshold_mode='rel', cooldown=0, min_lr=1e-7, factor=factor
+                )
         else:
-            # Cosine annealing phase
-            cos_inner = math.pi * (self.last_epoch - self.warmup_epochs) / (self.max_epochs - self.warmup_epochs)
-            cos_out = (1 + math.cos(cos_inner)) / 2
-            return [
-                self.min_lr + (base_lr - self.min_lr) * cos_out
-                for base_lr in self.base_lrs
-            ]
-
-def get_scheduler(args, optimizer):
-
-    type = args.lr_scheduler
+            return torch.optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer, mode='min', patience=1, threshold=0.001, threshold_mode='rel', cooldown=0, min_lr=1e-7
+                )
     
-    if type == 'cosine':
+    elif lr_scheduler == 'exponential':
 
-        return torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.iteration, eta_min=args.min_lr)
-    
-    elif type == 'warmupcos':
-
-        return WarmupCosineLR(optimizer, warmup_epochs=args.warmup, max_epochs=args.iteration, min_lr=args.min_lr)
-    
-    elif type == 'onplateau':
-        return torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min',
-                                                        factor=args.factor, patience=1,
-                                                        threshold=0.0001, threshold_mode='rel',
-                                                        cooldown=0, min_lr=1e-5)
-    
-    elif type == 'exponential':
-        return torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=args.factor)
+        return torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=factor if factor else 0.1)
+    else:
+        return None

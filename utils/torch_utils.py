@@ -1,7 +1,11 @@
+from pathlib import Path
 import random
+from model.ProfileESM import DomainSpanESM
+from settings import BASE_PATH
 import numpy as np
 import torch
 import gc
+from config import ModelArgs
 
 def fix_random(seed: int) -> None:
     """Fix all the possible sources of randomness.
@@ -41,3 +45,39 @@ def clear_cache():
         torch.mps.empty_cache()
 
     gc.collect()
+
+def load_model(filepath: Path|str, model_args=None):
+
+    if isinstance(filepath, str):
+        filepath = Path(filepath)
+
+    if not filepath.is_absolute():
+        filepath = BASE_PATH / filepath 
+
+    ckpt = torch.load(filepath)
+    state_dict = ckpt['model_state_dict']
+
+    if ckpt.get('config') is None and model_args is None:
+        raise Exception("Model load: config neither saved and provided")
+    elif model_args is None:
+            model_args = ModelArgs(**ckpt['config'])
+
+    net = DomainSpanESM(model_args)
+    net.load_state_dict(state_dict)
+
+    return net
+
+def save_model(model, filepath: Path|str):
+    
+    if isinstance(filepath, str):
+        filepath = Path(filepath)
+
+    if not filepath.is_absolute():
+        filepath = BASE_PATH / filepath 
+
+    filepath.parent.mkdir(parents=True, exist_ok=True)
+
+    torch.save({
+        'model_state_dict': model.state_dict(),
+        'config':  model.config.to_dict(),
+        }, filepath)

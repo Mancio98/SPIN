@@ -5,26 +5,19 @@ import matplotlib.pyplot as plt
 from sklearn.model_selection import train_test_split
 from collections import defaultdict
 
-def make_splits(targets, seed, val_set=True, stratify=True):
+
+def make_splits(eval_size, targets, seed, stratify=True):
 
     data_idx = np.arange(len(targets))
 
     train_idx, test_idx = train_test_split(
-        data_idx, test_size=0.2, random_state=seed, stratify=targets if stratify else None
+        data_idx, test_size=eval_size, random_state=seed, stratify=targets if stratify else None
         )
     
     split_dict = defaultdict(pd.DataFrame)
 
     split_dict['train'] = train_idx
-    split_dict['test'] = test_idx
-    
-    if val_set:
-        train_idx, val_idx = train_test_split(
-            train_idx, test_size=0.2, random_state=seed, stratify=targets[train_idx] if stratify else None
-            )
-            
-        split_dict['train'] = train_idx
-        split_dict['val'] = val_idx
+    split_dict['val'] = test_idx
 
     return split_dict
 
@@ -73,10 +66,8 @@ def compute_dataset_info(labels, **datasets): #y_train, y_test, y_val):
 
         foundlabels, countlabels = np.unique(splitlabel, axis=0, return_counts=True)
 
- 
         for i,label in enumerate(foundlabels):
             split_info[labels[label]] = countlabels[i]
-
 
         return split_info
     

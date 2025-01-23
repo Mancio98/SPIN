@@ -1,23 +1,22 @@
 from collections import defaultdict
+from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
-from traitlets import default
 
 from utils.data_utils import compute_dataset_info, make_plot_distribution, make_splits
 from transformers import AutoTokenizer
 from torch.utils.data import Dataset, DataLoader
-from torch.utils.data.sampler import BatchSampler, RandomSampler, SequentialSampler
 from typing import Dict
 
 from sklearn.utils.class_weight import compute_class_weight
-from settings import BASE_PATH, MAX_LENGTH
+from settings import BASE_PATH
 
 class PreprocessData:
 
-    def __init__(self, data, max_len=1024) -> None:
+    def __init__(self, fpath, max_len=1024) -> None:
 
-        self._data_input = data
+        self._data_input = Path(fpath)
         self._max_len = max_len
 
         self._base_dir = BASE_PATH
@@ -26,21 +25,38 @@ class PreprocessData:
         
     def _prepare_data(self) -> None:
 
-        if self._data_input.endswith(".csv"):
+        print(self._data_input)
+        if not self._data_input.is_absolute():
+                self._data_input = BASE_PATH / self._data_input 
 
-            self._process_csv()
-        elif self._data_input.endswith(".fasta"):
-            
-            #TODO 
-            self._process_fasta()
-        #elif is_sequence(self._data_input):
+        if not self._data_input.exists():
+            raise Exception("path doesn't exist")
+        
+        if self._data_input.suffix == ".csv":
+            data_df = self._process_csv()
+        elif self._data_input.suffix == ".fasta": 
+            data_df = self._process_fasta()
+        else:
+            raise Exception("format not supported (only csv or fasta)")
 
-            
-        #data_targets = np.column_stack((_data_intlabel,data_start,data_end))
+        
+        self._data_cleaning(data_df)
+        
+    def _process_fasta(self):
+
+        with open(self._base_dir / self._data_input, 'r') as f:
+
+            seqs = f.read().split('>')[1:]
+            fasta_id = [s.split()[0] for s in seqs]
+            fasta_seq = [''.join(s.split('\n')[1:]) for s in seqs]
+
+        return pd.DataFrame({'id_seq':fasta_id, 'sequence':fasta_seq})
 
     def _process_csv(self):
         
-        data_df = pd.read_csv(self._base_dir / self._data_input, sep=',')
+        return pd.read_csv(self._base_dir / self._data_input, sep=',')
+
+    def _data_cleaning(self, data_df):
 
         print(f"Dataset shape: {data_df.shape}")
         print(data_df.head(10))
@@ -74,7 +90,7 @@ class PreprocessData:
 
         return self.data_df
 
-class MyDataset:
+class EsmSpanDataset:
 
     def __init__(self, dataframe: pd.DataFrame) -> None:
         
@@ -89,99 +105,64 @@ class MyDataset:
         
         self._is_splitted = False
         
-    def split_data(self, seed, val_set=True, stratify=True, undersampling=False) -> None:
+    def split_data(self, seed, val_size=0.2, stratify=True) -> None:
 
-        if 'label' in self.dataframe.columns:
+        if 'label' not in self.dataframe.columns:
 
             print("No meaning in splitting without targets")
             return
         
-        splits = make_splits(self.dataframe['labels'], seed, val_set, stratify=stratify)
+        if val_size == 0.0:
+            print("No meaning in splitting with eval size equals to 0")
+            return
+        
+        splits = make_splits(val_size, self.dataframe['label'], seed, stratify=stratify)
 
         self.train_df = self.dataframe.iloc[splits['train']].reset_index(names=['old_index'])
-        self.test_df = self.dataframe.iloc[splits['test']].reset_index(names=['old_index'])
-        self.val_df = None
+        self.val_df = self.dataframe.iloc[splits['val']].reset_index(names=['old_index'])
 
-        if val_set:
-            self.val_df = self.dataframe.iloc[splits['val']].reset_index(names=['old_index'])
-
-        if undersampling:
-            
-            _, counts = np.unique(self.train_df['labels'], return_counts=True)
-
-            sort_counts = np.argsort(counts)[::-1]
-
-            first_class = sort_counts[0]
-            second_class = sort_counts[1]
-
-            first_idx = np.nonzero(self.train_df['labels'] == first_class)[0]
-
-            remove_part = first_idx[counts[second_class]:]
-
-            print(remove_part)
-
-            train_idx = self.train_df.index.values
-            test_idx = self.test_df.index.values
-
-            removing_idx = train_idx[remove_part]
-            train_idx = np.delete(train_idx, remove_part)
-            test_idx = np.concatenate([test_idx, removing_idx])
-
-            self.train_df.iloc[train_idx].reset_index(drop=True)
-            self.test_df.iloc[test_idx].reset_index(drop=True)
-
+        print(f"Splits: train={len(splits['train'])} val={len(splits['val'])}")
+        
         self._is_splitted = True
 
     def compute_class_weights(self):
 
-        if not self._is_splitted:
+        dataframe = self.train_df if self._is_splitted else self.dataframe
 
-            print("Data not splitted")
-            return
+        class_weights = compute_class_weight(
+            class_weight="balanced", classes=dataframe['label'].unique(), y=dataframe['label']
+            )
 
-        class_array, _ = np.unique(self._train_y, return_counts=True)
+        return class_weights
 
-        class_weights = compute_class_weight(class_weight="balanced", classes=class_array, y=self.train_df['labels'])
-        class2weight = {i:class_weights[i] for i in range(len(class_weights))}
+    def get_data_loaders(self, model_version, batch_size=8, shuffle=True) ->  Dict[str,DataLoader]|DataLoader:
 
-        print(f"Weights per class: {class2weight}")
-        
-        return class2weight
+        tokenizer = AutoTokenizer.from_pretrained(model_version)
 
-    def get_data_loaders(self, model_name, batch_size=8) ->  Dict[str,DataLoader]|DataLoader:
-
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
 
         if self._is_splitted:
 
             train_ds = _MyDataset(self.train_df, tokenizer)
-            test_ds = _MyDataset(self.test_df, tokenizer)
-
             loader_dict = defaultdict(DataLoader)
-            loader_dict['train_loader'] = DataLoader(
-                train_ds, batch_sampler=BatchSampler(RandomSampler(train_ds),batch_size=batch_size,drop_last=False), pin_memory=True, num_workers=4
-                )
-            loader_dict['test_loader'] = DataLoader(
-                test_ds, batch_sampler=BatchSampler(SequentialSampler(test_ds), batch_size=batch_size, drop_last=False), pin_memory=True, num_workers=4
+            train_loader = DataLoader(
+                train_ds, batch_size=batch_size, shuffle=shuffle, pin_memory=True, num_workers=4
                 )
             
-            if self.val_df is not None:
-
-                val_ds = _MyDataset(self.val_df, tokenizer)
-                loader_dict['val_loader'] = DataLoader(
-                    val_ds, batch_sampler=BatchSampler(SequentialSampler(val_ds), batch_size=batch_size, drop_last=False), pin_memory=True, num_workers=4
-                    )
+            val_ds = _MyDataset(self.val_df, tokenizer)
+            val_loader = DataLoader(
+                val_ds, batch_size=batch_size, shuffle=False, pin_memory=True, num_workers=4
+                )
             
-            return loader_dict
+            return [train_loader, val_loader]
         
         else:
 
             ds = _MyDataset(self.dataframe, tokenizer)
             loader = DataLoader(
-                ds, batch_sampler=BatchSampler(SequentialSampler(ds), batch_size=batch_size, drop_last=False), pin_memory=True, num_workers=4
+                ds, batch_size=batch_size, shuffle=shuffle, pin_memory=True, num_workers=4
                 )
 
-            return loader
+            return [loader]
         
     def plot_distribution(self, class2colors=None):
 
@@ -190,25 +171,32 @@ class MyDataset:
             datasets = {}
             datasets['train'] = self.train_df['label']
             datasets['test'] = self.test_df['label']
-            if self._val_y is not None:
+            if self.val_df is not None:
                 datasets['val'] = self.val_df['label']
         else:
             datasets = {'dataset':self.dataframe['label']}
 
         datasets_len, dataset_info = compute_dataset_info(self.labels, **datasets)
-
         make_plot_distribution(dataset_info, len(datasets), class2colors)
 
 class _MyDataset(Dataset):
 
-    def __init__(self, dataframe: pd.DataFrame, tokenizer):
+    def __init__(self, dataframe: pd.DataFrame, tokenizer=None):
         
         self.X = dataframe['sequence']
         
+        self.start_dom, self.end_dom = None, None
+
+        if 'start' in dataframe.columns:
+            self.start_dom = dataframe['start']
+        
+        if 'end' in dataframe.columns:
+            self.end_dom = dataframe['end']
+
+        self.y = None
         if 'label' in dataframe.columns:
             self.y = torch.LongTensor(dataframe['label'])
-
-        self.data_df = None
+        
         self.tokenizer = tokenizer
 
     def __len__(self):
@@ -216,12 +204,23 @@ class _MyDataset(Dataset):
 
     def __getitem__(self, idx):
 
-        batch_x = self.tokenizer(
-            self.X[idx], max_length=MAX_LENGTH, padding='max_length', truncation=True, return_tensors='pt'
-            )
+        batch_x = self.X[idx]
         
-        batch_x = {key: val.squeeze(0) for key, val in batch_x.items()}  # Remove batch dimension
+        if self.tokenizer is not None:
 
-        batch_y = self.y[idx]
-            
-        return batch_x, batch_y
+            token_dict = self.tokenizer(batch_x, max_length=1024, padding='max_length', truncation=True, return_tensors='pt')
+            batch_x = {k:v.squeeze(0) for k,v in token_dict.items()}
+
+        batch_start, batch_end = None, None
+        
+        if self.start_dom is not None and self.end_dom is not None:
+            batch_start = self.start_dom[idx]
+            batch_end = self.end_dom[idx]
+    
+        batch_y = None
+        if self.y is not None:
+            batch_y = self.y[idx]
+
+        input_dict = dict(input=batch_x, start=batch_start, end=batch_end)
+
+        return input_dict, batch_y

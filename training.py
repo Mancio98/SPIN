@@ -1,17 +1,16 @@
 import argparse
-import numpy as np
+from model.ProfileESM import DomainSpanESM
+from trainer.trainer_domspanesm import TrainDomSpanESM
+
 import torch 
 
 from typing import Dict
-from model import get_model
-from data.preprocessing import MyDataset, PreprocessData
-from trainer.trainer_profilesm import TrainProfileESM
-from utils.evaluation_utils import evaluate, load_network
+
+from data.preprocessing import EsmSpanDataset, PreprocessData
 from utils.torch_utils import fix_random, get_device
 from config import TrainArgs, ModelArgs
 
 from settings import BASE_PATH
-from utils.trainer_utils import get_scheduler
 
 
 class TrainingPipeline:
@@ -21,92 +20,77 @@ class TrainingPipeline:
         self.mode = mode
         self.seed = seed
         self.device = device
-
+        
         self.base_dir = BASE_PATH
 
     def __call__(
-        self, train_args, data_in=None, batch_size=8, validate=False, train_loader=None, val_loader=None, model_args=None
+        self, train_args: TrainArgs, data_in=None, batch_size=8, train_loader=None, val_loader=None, model_args: ModelArgs=None
     ) -> Dict:
         
         results = None
 
         if self.mode == 'auto':
             
-            outputs = self.prepare_auto(data_in, train_args, batch_size, validate)
-            train_args, model_args, loaders_dict = outputs
+            outputs = self.prepare_auto(data_in, train_args, batch_size)
+            train_args, model_args, loaders = outputs
 
             results = self.train(
-                train_args, model_args, loaders_dict['train_loader'], loaders_dict['val_loader']
+                train_args, model_args, *loaders
             )
 
-            results['test_loader'] = loaders_dict['test_loader']
 
-        elif self.mode == 'manual':
+        elif self.mode == 'manual': # useful if imported
 
             results = self.train(train_args, model_args, train_loader=train_loader,val_loader=val_loader)
         
         return results
 
     def prepare_auto(
-            self, fpath, train_args, batch_size, validate
+            self, fpath, train_args, batch_size
             ):
 
-
-        if not (self.base_dir/ fpath).exists() or not fpath.endswith(".csv"):
-            raise Exception("file type incorrect or path doesn't exist")
-        
         dataframe = PreprocessData(fpath).get_data()
 
-        dataset = MyDataset(dataframe)
-        dataset.split_data(self.seed,val_set=validate)
-        dataset.plot_distribution()
+        dataset = EsmSpanDataset(dataframe)
+        dataset.split_data(self.seed, val_size=train_args.val_size)
+        # dataset.plot_distribution()
 
         model_args = ModelArgs()
-        model_args.distinct_labels = dataset.labels
+        model_args.labels = dataset.labels
         model_args.num_class = len(dataset.labels)
 
         class_weights = dataset.compute_class_weights()
-        train_args.criterion = torch.nn.CrossEntropyLoss(weight=class_weights.to(self.device))
+        train_args.class_weights = class_weights
 
-        loaders_dict = dataset.get_data_loaders(
-            model_name=model_args.esm_name, fpath=fpath, batch_size=batch_size
+        print(f"Weights per class: {" - ".join([f"{model_args.labels[i]}: {v: .2f}" for i,v in enumerate(class_weights)])}")
+
+        train_args.criterion = torch.nn.CrossEntropyLoss(
+            weight=torch.tensor(class_weights, dtype=torch.float32).to(self.device)
         )
 
-        return train_args, model_args, loaders_dict
+        loaders = dataset.get_data_loaders(
+            model_version=model_args.version, batch_size=batch_size
+        )
+
+
+        return train_args, model_args, loaders
 
     
     def train(self, args: TrainArgs, model_args: ModelArgs, train_loader, val_loader=None) -> Dict:
         
-        #model = ProfileESM(model_args)
-        model = get_model(model_args)
+        model = DomainSpanESM(model_args)
 
-        trainer = TrainProfileESM(
-            args.nametrain, self.device, args.odname
+        trainer = TrainDomSpanESM(
+            args.verbose, self.device, args.train_name, args.odname
         )
 
-        optimizer = args.optimizer(model.parameters(), lr=args.l_rate, weight_decay=args.w_decay)
-
-        lr_scheduler = None
-        if args.lr_scheduler:
-
-            if args.lr_scheduler in ['cosine']:
-
-                args.iteration = len(train_loader) * args.epochs
-            else:
-                args.iteration = args.epochs
-
-            lr_scheduler = get_scheduler(args, optimizer)
-           
         result = trainer.fit(
+            args,
             model,
             train_loader,
             val_loader,
-            args.criterion,
-            args.epochs,
-            optimizer,
-            args.early_stopping,
-            lr_scheduler,
-            save_metrics=True
+            args.save,
+            args.verbose
         )
 
         return result
@@ -140,16 +124,28 @@ if __name__ == "__main__":
         "-ep","--epochs", dest="epochs", type=int, default=10, help="training epochs"
         )
     parser.add_argument(
-        "--no-scheduler", dest="lr_scheduler", action='store_false', default=True, help="Doesn't apply ReduceLROnPlateau"
+        "-optim", dest="optimizer", type=str, default='adam', choices=['adam','adamw'], help="optimizer"
+        )
+    parser.add_argument(
+        "-sched", dest="lr_scheduler", type=str, default=None, choices=['warmuplinear', 'warmupcos', 'onplateau','exponential'], help="Lr scheduler"
         )
 
     parser.add_argument(
         "-b","--batchsize", dest="batch_size", type=int, default=8, help="batch size"
         )
     parser.add_argument(
-        "--no-valset", dest="validate", action='store_false', default=True, help="No validation set"
+        "-val", dest="val_size", type=float, default=0.2, help="validate set size"
         )
-
+    parser.add_argument(
+        "-log", dest="log_interval", type=int, default=50, help="log"
+        )
+    parser.add_argument(
+        "--save", dest="save", action='store_false', default=True, help="Save checkpoints"
+    )
+    parser.add_argument(
+        "-v","--verbose", dest="verbose", type=int, default=1, help="verbose"
+    )
+    
     options = parser.parse_args()
 
     seed = options.seed
@@ -158,13 +154,17 @@ if __name__ == "__main__":
     device = get_device() if options.device == 'auto' else options.device
 
     train_args = TrainArgs()
-    train_args.nametrain = options.name_train
+    train_args.train_name = options.name_train
     train_args.l_rate = options.lr
     train_args.epochs = options.epochs
     train_args.odname = options.odname
+    train_args.optimizer = options.optimizer
     train_args.lr_scheduler = options.lr_scheduler
+    train_args.log_interval = options.log_interval
+    train_args.verbose = options.verbose
+    train_args.val_size = options.val_size
 
     pipeline = TrainingPipeline(seed=seed, mode='auto', device=device)
     results = pipeline(
-        data_in=options.fpath, train_args=train_args, batch_size=options.batch_size, validate=options.validate
+        data_in=options.fpath, train_args=train_args, batch_size=options.batch_size
         )
