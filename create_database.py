@@ -39,11 +39,7 @@ def define_classes_at_depth(fasta_path, tree: Tree, depth):
 
     len_nodes = len(node_list)
 
-    class_ids = [getattr(node,'repr_model') for node in node_list if getattr(node,'repr_model') is not None]
-
-    if len(class_ids) < len_nodes:
-
-        class_ids = [node.name for node in node_list]
+    class_ids = [node.name for node in node_list]
 
     node2seqs = {class_ids[i]:node.get_leaf_names() for i,node in enumerate(node_list)}
     class2seqs = {}
@@ -61,11 +57,7 @@ def define_classes_from_list(fasta_path, tree: Tree, node_ids_list, class_ids=No
     len_nodes = len(node_list)
     
     if not class_ids:
-        class_ids = [getattr(node,'repr_model') for node in node_list if getattr(node,'repr_model') is not None]
-
-        if len(class_ids) < len_nodes:
-
-            class_ids = [node.name for node in node_list]
+        class_ids = [node.name for node in node_list]
 
     node2seqs = {class_ids[i]:node.get_leaf_names() for i,node in enumerate(node_list)}
     class2seqs = {}

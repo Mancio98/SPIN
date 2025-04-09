@@ -1,6 +1,6 @@
 from pathlib import Path
 import random
-from model.ProfileESM import DomainSpanESM
+from model import DomainSpanESM
 from settings import BASE_PATH
 import numpy as np
 import torch

@@ -1,8 +1,8 @@
 import argparse
-from model.ProfileESM import DomainSpanESM
+from model import DomainSpanESM
 from trainer.trainer_domspanesm import TrainDomSpanESM
 
-import torch 
+import torch
 
 from typing import Dict
 
